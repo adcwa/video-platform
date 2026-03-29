@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from backend.app.database import get_db
-from backend.app.models import Project, Shot, ProjectStatus, ShotStatus
+from backend.app.models import Project, Shot, ProjectStatus, ShotStatus, ProjectCharacter, ProjectScene, Character, Scene
 from backend.app.schemas import (
     ScriptGenerateRequest, ScriptGenerateResponse,
     VideoGenerateRequest, VideoGenerateResponse, VideoTaskStatusResponse,
@@ -21,6 +21,93 @@ from backend.app.services import doubao_service, seedance_service, tts_service, 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["AI服务"])
+
+
+# ============ 角色/场景上下文辅助 ============
+
+async def _build_asset_context(db: AsyncSession, project_id: str) -> dict:
+    """
+    查询项目关联的角色和场景，构建可注入 prompt 的上下文信息。
+    返回:
+      {
+        "character_prompt": str,   # 角色描述文本（注入脚本/视频prompt）
+        "scene_prompt": str,       # 场景描述文本
+        "voice_type": str,         # 首选角色音色（用于TTS）
+        "character_ref_images": list[str],  # 角色参考图片
+        "scene_ref_images": list[str],       # 场景参考图片
+        "all_ref_images": list[str],         # 所有参考图片（角色+场景，用于LLM视觉分析）
+      }
+    """
+    # 查询项目角色
+    char_result = await db.execute(
+        select(ProjectCharacter)
+        .where(ProjectCharacter.project_id == project_id)
+        .options(selectinload(ProjectCharacter.character))
+    )
+    project_chars = char_result.scalars().all()
+
+    # 查询项目场景
+    scene_result = await db.execute(
+        select(ProjectScene)
+        .where(ProjectScene.project_id == project_id)
+        .options(selectinload(ProjectScene.scene))
+    )
+    project_scenes = scene_result.scalars().all()
+
+    # 构建角色描述
+    char_parts = []
+    voice_type = ""
+    char_ref_images = []
+    for pc in project_chars:
+        ch = pc.character
+        if not ch:
+            continue
+        name = ch.name
+        desc = pc.custom_description or ch.description or ""
+        appearance = pc.custom_appearance_prompt or ch.appearance_prompt or ""
+        if appearance:
+            char_parts.append(f"角色[{name}]: {appearance}")
+        elif desc:
+            char_parts.append(f"角色[{name}]: {desc}")
+        # 取第一个角色的音色
+        if not voice_type:
+            voice_type = pc.custom_voice_type or ch.voice_type or ""
+        # 收集角色参考图
+        if ch.reference_images:
+            char_ref_images.extend(ch.reference_images)
+
+    # 构建场景描述
+    scene_parts = []
+    scene_ref_images = []
+    for ps in project_scenes:
+        sc = ps.scene
+        if not sc:
+            continue
+        name = sc.name
+        env = ps.custom_environment_prompt or sc.environment_prompt or ""
+        mood = sc.mood or ""
+        lighting = sc.lighting or ""
+        parts = [p for p in [env, f"mood:{mood}" if mood else "", f"lighting:{lighting}" if lighting else ""] if p]
+        if parts:
+            scene_parts.append(f"场景[{name}]: {', '.join(parts)}")
+        # 收集场景参考图
+        if sc.reference_images:
+            scene_ref_images.extend(sc.reference_images)
+
+    character_prompt = "; ".join(char_parts)
+    scene_prompt = "; ".join(scene_parts)
+
+    # 合并所有参考图（角色优先，场景其次），用于 LLM 视觉分析
+    all_ref_images = char_ref_images[:3] + scene_ref_images[:2]  # 最多5张
+
+    return {
+        "character_prompt": character_prompt,
+        "scene_prompt": scene_prompt,
+        "voice_type": voice_type,
+        "character_ref_images": char_ref_images,
+        "scene_ref_images": scene_ref_images,
+        "all_ref_images": all_ref_images,
+    }
 
 
 # ============ 脚本生成 ============
@@ -47,6 +134,35 @@ async def generate_script(
             project.style_context = style_context
             project.reference_images = request.image_urls
 
+        # === 查询项目关联的角色和场景，注入脚本生成上下文 ===
+        asset_ctx = await _build_asset_context(db, project_id)
+        asset_hint = ""
+        if asset_ctx["character_prompt"]:
+            asset_hint += f"\n\n【项目角色设定】\n{asset_ctx['character_prompt']}\n请在每个镜头的画面描述中保持以上角色的外观一致性。"
+        if asset_ctx["scene_prompt"]:
+            asset_hint += f"\n\n【项目场景设定】\n{asset_ctx['scene_prompt']}\n请在镜头描述中融入以上场景氛围。"
+
+        # === 合并参考图片：用户上传 + 角色/场景资产参考图 ===
+        # 角色和场景的参考图必须传给 LLM 做视觉分析，不能只靠文字描述
+        image_urls = list(request.image_urls) if request.image_urls else []
+        asset_images = asset_ctx["all_ref_images"]
+        # 将资产参考图合并到 image_urls（去重）
+        existing_set = set(image_urls)
+        for img in asset_images:
+            if img and img not in existing_set:
+                image_urls.append(img)
+                existing_set.add(img)
+
+        if asset_images:
+            asset_hint += f"\n\n⚠️ 注意：已附带了 {len(asset_images)} 张角色/场景参考图片。请仔细分析这些图片中的角色外观和场景环境，确保脚本中的描述与图片完全一致。"
+            logger.info(f"脚本生成: 合并 {len(asset_images)} 张资产参考图 + {len(request.image_urls or [])} 张用户上传图")
+
+        # 如果有参考图（含资产图），提取视觉风格上下文
+        if image_urls and not style_context:
+            style_context = await doubao_service.extract_style_context(image_urls)
+            project.style_context = style_context
+            project.reference_images = image_urls
+
         # 调用豆包大模型生成脚本
         # 将提取的风格/主体描述作为额外上下文传入，让LLM在每个镜头中复用
         style_hint = ""
@@ -57,8 +173,8 @@ async def generate_script(
             theme=request.theme or project.theme,
             scene_type=request.scene_type or project.scene_type,
             target_duration=request.target_duration or project.target_duration,
-            additional_context=(request.additional_context or "") + style_hint,
-            image_urls=request.image_urls if request.image_urls else None,
+            additional_context=(request.additional_context or "") + style_hint + asset_hint,
+            image_urls=image_urls if image_urls else None,
         )
 
         # 同时提取 subject_description 存入 style_context
@@ -208,6 +324,17 @@ async def generate_video(
     reference_images = project.reference_images if project else []
     subject_ref_image = reference_images[0] if reference_images else ""
 
+    # 查询角色/场景上下文
+    asset_ctx = await _build_asset_context(db, shot.project_id) if project else {
+        "character_prompt": "", "scene_prompt": "", "voice_type": "",
+        "character_ref_images": [], "scene_ref_images": [], "all_ref_images": [],
+    }
+    # 如果没有用户参考图，尝试使用角色/场景参考图
+    if not subject_ref_image and asset_ctx["character_ref_images"]:
+        subject_ref_image = asset_ctx["character_ref_images"][0]
+    elif not subject_ref_image and asset_ctx["scene_ref_images"]:
+        subject_ref_image = asset_ctx["scene_ref_images"][0]
+
     # 确定首帧（尾帧链接模式，与批量生成一致）
     # 优先级：手动传入 > shot已存 > 上一镜头尾帧 > 参考图片（仅首个镜头）
     first_frame = request.first_frame_url or shot.first_frame_url or ""
@@ -233,6 +360,14 @@ async def generate_video(
 
     try:
         prompt = request.prompt or shot.description
+        # 融合角色/场景描述到提示词
+        asset_parts = []
+        if asset_ctx["character_prompt"]:
+            asset_parts.append(asset_ctx["character_prompt"])
+        if asset_ctx["scene_prompt"]:
+            asset_parts.append(asset_ctx["scene_prompt"])
+        if asset_parts:
+            prompt = f"{'. '.join(asset_parts)}. {prompt}"
         if style_prefix:
             prompt = f"{style_prefix}. {prompt}"
 
@@ -412,6 +547,26 @@ async def _batch_generate_worker(project_id: str):
             # 参考图仅用于第一个镜头的首帧
             subject_ref_image = reference_images[0] if reference_images else ""
 
+            # === 查询项目关联的角色和场景 ===
+            asset_ctx = await _build_asset_context(db, project_id)
+            asset_prompt_parts = []
+            if asset_ctx["character_prompt"]:
+                asset_prompt_parts.append(asset_ctx["character_prompt"])
+            if asset_ctx["scene_prompt"]:
+                asset_prompt_parts.append(asset_ctx["scene_prompt"])
+            asset_prompt_prefix = ". ".join(asset_prompt_parts) if asset_prompt_parts else ""
+
+            # 如果没有用户参考图，但角色/场景有参考图，使用它们
+            if not subject_ref_image and asset_ctx["character_ref_images"]:
+                subject_ref_image = asset_ctx["character_ref_images"][0]
+                logger.info(f"使用角色参考图作为首帧: {subject_ref_image[:80]}...")
+            elif not subject_ref_image and asset_ctx["scene_ref_images"]:
+                subject_ref_image = asset_ctx["scene_ref_images"][0]
+                logger.info(f"使用场景参考图作为首帧: {subject_ref_image[:80]}...")
+
+            # 角色的默认音色（用于TTS）
+            asset_voice_type = asset_ctx["voice_type"]
+
             sorted_shots = sorted(project.shots, key=lambda s: s.sequence)
             prev_last_frame_url = ""
 
@@ -439,10 +594,12 @@ async def _batch_generate_worker(project_id: str):
                         first_frame = subject_ref_image
                         logger.info(f"镜头 {shot.sequence}: 首帧=参考图片（{'首个镜头' if i == 0 else '无可用尾帧，回退'}）")
 
-                    # === 构建增强提示词 ===
+                    # === 构建增强提示词（融合风格+角色+场景） ===
                     enhanced_prompt = shot.description
+                    if asset_prompt_prefix:
+                        enhanced_prompt = f"{asset_prompt_prefix}. {enhanced_prompt}"
                     if style_prefix:
-                        enhanced_prompt = f"{style_prefix}. {shot.description}"
+                        enhanced_prompt = f"{style_prefix}. {enhanced_prompt}"
 
                     logger.info(f"镜头 {shot.sequence}: 提交生成, first_frame={'有' if first_frame else '无'}")
 
@@ -518,11 +675,13 @@ async def _batch_generate_worker(project_id: str):
                         try:
                             tts_result = await tts_service.synthesize_speech(
                                 text=shot.dialogue,
+                                voice_type=asset_voice_type or None,  # 使用角色音色（如果有）
                             )
                             shot.audio_url = tts_result["audio_url"]
                             shot.audio_duration = tts_result["duration"]
                             await db.flush()
-                            logger.info(f"镜头 {shot.sequence} TTS完成: {tts_result['duration']:.1f}s")
+                            voice_info = f", 音色={asset_voice_type}" if asset_voice_type else ""
+                            logger.info(f"镜头 {shot.sequence} TTS完成: {tts_result['duration']:.1f}s{voice_info}")
                         except Exception as tts_err:
                             logger.warning(f"镜头 {shot.sequence} TTS失败（不阻塞流程）: {tts_err}")
 

@@ -429,3 +429,86 @@ async def test_search_characters(client: AsyncClient):
     assert r.status_code == 200
     assert len(r.json()) == 1
     assert r.json()[0]["name"] == "布偶猫"
+
+
+@pytest.mark.asyncio
+async def test_project_asset_integration(client: AsyncClient):
+    """测试完整的项目-资产关联流程：创建角色/场景 → 关联到项目 → 验证关联信息"""
+    # 创建项目
+    proj_r = await client.post("/api/projects", json={"title": "资产集成测试"})
+    project_id = proj_r.json()["id"]
+
+    # 创建角色（带 appearance_prompt 和 voice_type）
+    char_r = await client.post("/api/assets/characters", json={
+        "name": "测试角色",
+        "appearance_prompt": "A young girl with long black hair",
+        "voice_type": "BV700_streaming",
+        "reference_images": ["http://example.com/img1.jpg"],
+        "tags": ["主角"],
+    })
+    char_id = char_r.json()["id"]
+
+    # 创建场景（带 environment_prompt）
+    scene_r = await client.post("/api/assets/scenes", json={
+        "name": "测试场景",
+        "environment_prompt": "A tranquil bamboo forest with morning mist",
+        "mood": "peaceful",
+        "lighting": "soft morning light",
+    })
+    scene_id = scene_r.json()["id"]
+
+    # 关联角色到项目
+    link_char = await client.post(f"/api/assets/projects/{project_id}/characters", json={
+        "character_id": char_id,
+    })
+    assert link_char.status_code == 200
+    assert link_char.json()["character"]["name"] == "测试角色"
+    assert link_char.json()["character"]["appearance_prompt"] == "A young girl with long black hair"
+
+    # 关联场景到项目
+    link_scene = await client.post(f"/api/assets/projects/{project_id}/scenes", json={
+        "scene_id": scene_id,
+    })
+    assert link_scene.status_code == 200
+    assert link_scene.json()["scene"]["name"] == "测试场景"
+
+    # 查询项目的角色
+    chars_list = await client.get(f"/api/assets/projects/{project_id}/characters")
+    assert chars_list.status_code == 200
+    assert len(chars_list.json()) == 1
+    pc = chars_list.json()[0]
+    assert pc["character"]["voice_type"] == "BV700_streaming"
+    assert pc["character"]["reference_images"] == ["http://example.com/img1.jpg"]
+
+    # 查询项目的场景
+    scenes_list = await client.get(f"/api/assets/projects/{project_id}/scenes")
+    assert scenes_list.status_code == 200
+    assert len(scenes_list.json()) == 1
+    ps = scenes_list.json()[0]
+    assert ps["scene"]["environment_prompt"] == "A tranquil bamboo forest with morning mist"
+    assert ps["scene"]["mood"] == "peaceful"
+
+    # 关联角色带自定义覆盖
+    char2_r = await client.post("/api/assets/characters", json={"name": "角色2"})
+    char2_id = char2_r.json()["id"]
+    link2 = await client.post(f"/api/assets/projects/{project_id}/characters", json={
+        "character_id": char2_id,
+        "custom_appearance_prompt": "Overridden prompt for project",
+        "custom_voice_type": "BV001_streaming",
+    })
+    assert link2.status_code == 200
+    assert link2.json()["custom_appearance_prompt"] == "Overridden prompt for project"
+    assert link2.json()["custom_voice_type"] == "BV001_streaming"
+
+    # 验证总数
+    chars_all = await client.get(f"/api/assets/projects/{project_id}/characters")
+    assert len(chars_all.json()) == 2
+
+    # 移除一个角色
+    del_r = await client.delete(f"/api/assets/projects/{project_id}/characters/{char_id}")
+    assert del_r.status_code == 200
+
+    # 验证剩余
+    chars_remain = await client.get(f"/api/assets/projects/{project_id}/characters")
+    assert len(chars_remain.json()) == 1
+    assert chars_remain.json()[0]["character_id"] == char2_id

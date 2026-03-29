@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { api, createProjectWebSocket, type Project, type Shot } from "@/lib/api";
+import { api, createProjectWebSocket, type Project, type Shot, type Character, type Scene, type ProjectCharacter, type ProjectScene } from "@/lib/api";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import FileUpload from "@/components/FileUpload";
@@ -30,6 +30,16 @@ export default function ProjectDetailPage() {
   const wsRef = useRef<{ close: () => void } | null>(null);
   const { toasts, showToast, removeToast } = useToast();
 
+  // === 角色&场景 状态 ===
+  const [projectCharacters, setProjectCharacters] = useState<ProjectCharacter[]>([]);
+  const [projectScenes, setProjectScenes] = useState<ProjectScene[]>([]);
+  const [allCharacters, setAllCharacters] = useState<Character[]>([]);
+  const [allScenes, setAllScenes] = useState<Scene[]>([]);
+  const [showCharacterPicker, setShowCharacterPicker] = useState(false);
+  const [showScenePicker, setShowScenePicker] = useState(false);
+  const [charSearch, setCharSearch] = useState("");
+  const [sceneSearch, setSceneSearch] = useState("");
+
   const loadProject = useCallback(async () => {
     try {
       const data = await api.getProject(projectId);
@@ -52,7 +62,20 @@ export default function ProjectDetailPage() {
     }
   }, [projectId]);
 
-  useEffect(() => { loadProject(); }, [loadProject]);
+  const loadProjectAssets = useCallback(async () => {
+    try {
+      const [chars, scenes] = await Promise.all([
+        api.listProjectCharacters(projectId),
+        api.listProjectScenes(projectId),
+      ]);
+      setProjectCharacters(chars);
+      setProjectScenes(scenes);
+    } catch (e) {
+      console.error("加载项目资产失败:", e);
+    }
+  }, [projectId]);
+
+  useEffect(() => { loadProject(); loadProjectAssets(); }, [loadProject, loadProjectAssets]);
 
   useEffect(() => {
     if (!project) return;
@@ -79,6 +102,61 @@ export default function ProjectDetailPage() {
     }, 15000);
     return () => clearInterval(interval);
   }, [project, loadProject]);
+
+  // === 角色/场景管理 ===
+  async function loadGlobalCharacters() {
+    try {
+      const chars = await api.listCharacters({ search: charSearch || undefined });
+      setAllCharacters(chars);
+    } catch { /* ignore */ }
+  }
+
+  async function loadGlobalScenes() {
+    try {
+      const scenes = await api.listScenes({ search: sceneSearch || undefined });
+      setAllScenes(scenes);
+    } catch { /* ignore */ }
+  }
+
+  async function handleAddCharacter(characterId: string) {
+    try {
+      await api.addProjectCharacter(projectId, { character_id: characterId });
+      await loadProjectAssets();
+      showToast("角色已添加到项目", "success");
+    } catch (e) {
+      showToast("添加失败: " + (e as Error).message, "error");
+    }
+  }
+
+  async function handleRemoveCharacter(characterId: string) {
+    try {
+      await api.removeProjectCharacter(projectId, characterId);
+      await loadProjectAssets();
+      showToast("已移除角色", "info");
+    } catch (e) {
+      showToast("移除失败: " + (e as Error).message, "error");
+    }
+  }
+
+  async function handleAddScene(sceneId: string) {
+    try {
+      await api.addProjectScene(projectId, { scene_id: sceneId });
+      await loadProjectAssets();
+      showToast("场景已添加到项目", "success");
+    } catch (e) {
+      showToast("添加失败: " + (e as Error).message, "error");
+    }
+  }
+
+  async function handleRemoveScene(sceneId: string) {
+    try {
+      await api.removeProjectScene(projectId, sceneId);
+      await loadProjectAssets();
+      showToast("已移除场景", "info");
+    } catch (e) {
+      showToast("移除失败: " + (e as Error).message, "error");
+    }
+  }
 
   async function handleGenerateScript() {
     if (!scriptTheme.trim()) return;
@@ -186,7 +264,7 @@ export default function ProjectDetailPage() {
           </div>
           <div className="flex gap-1 mt-4 -mb-px">
             {([
-              { id: "script" as const, label: "① 脚本", icon: "✍️" },
+              { id: "script" as const, label: `① 设定 & 脚本${projectCharacters.length + projectScenes.length > 0 ? ` (${projectCharacters.length}角色 ${projectScenes.length}场景)` : ""}`, icon: "✍️" },
               { id: "shots" as const, label: `② 分镜(${project.shots.length})`, icon: "🎬" },
               { id: "compose" as const, label: "\u2462 \u5408\u6210", icon: "\uD83C\uDFA5" },
             ]).map((tab) => (
@@ -217,6 +295,34 @@ export default function ProjectDetailPage() {
                     <textarea className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500" rows={2}
                       placeholder="额外要求..." value={additionalContext} onChange={(e) => setAdditionalContext(e.target.value)} />
                   </div>
+                  {/* 已关联的角色/场景提示 */}
+                  {(projectCharacters.length > 0 || projectScenes.length > 0) && (
+                    <div className="p-3 bg-purple-50 rounded-lg border border-purple-100">
+                      <p className="text-xs font-medium text-purple-700 mb-1">🎭 已关联资产（参考图片 + 文字描述均会自动注入 AI 生成）</p>
+                      <div className="flex flex-wrap gap-2">
+                        {projectCharacters.map((pc) => (
+                          <span key={pc.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded text-xs">
+                            {pc.character.reference_images?.[0] && <img src={pc.character.reference_images[0]} alt="" className="w-4 h-4 rounded-full object-cover" />}
+                            🎭 {pc.character.name}
+                            {pc.character.reference_images.length > 0 && <span className="text-purple-400">📷{pc.character.reference_images.length}</span>}
+                          </span>
+                        ))}
+                        {projectScenes.map((ps) => (
+                          <span key={ps.id} className="inline-flex items-center gap-1 px-2 py-0.5 bg-blue-100 text-blue-700 rounded text-xs">
+                            {ps.scene.reference_images?.[0] && <img src={ps.scene.reference_images[0]} alt="" className="w-4 h-4 rounded object-cover" />}
+                            🏞️ {ps.scene.name}
+                            {ps.scene.reference_images.length > 0 && <span className="text-blue-400">📷{ps.scene.reference_images.length}</span>}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="text-xs text-purple-500 mt-1">在下方「角色 & 场景」区域管理 ↓</p>
+                    </div>
+                  )}
+                  {projectCharacters.length === 0 && projectScenes.length === 0 && (
+                    <p className="text-xs text-gray-400">
+                      💡 在下方添加角色和场景，它们的参考图片会自动传递给 AI 进行视觉分析 ↓
+                    </p>
+                  )}
                   <button onClick={handleGenerateScript} disabled={generating || !scriptTheme.trim()}
                     className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium">
                     {generating ? <span className="flex items-center gap-2"><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />创作中...</span> : "✨ AI 生成脚本"}
@@ -249,6 +355,85 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             </div>
+
+            {/* === 角色 & 场景管理（内嵌在脚本标签页） === */}
+            <div className="bg-white rounded-xl border border-gray-100 p-6">
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-lg font-bold text-gray-900">🎭 角色 & 场景</h2>
+                <div className="flex gap-2">
+                  <button onClick={() => { setShowCharacterPicker(true); loadGlobalCharacters(); }}
+                    className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700">+ 角色</button>
+                  <button onClick={() => { setShowScenePicker(true); loadGlobalScenes(); }}
+                    className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700">+ 场景</button>
+                </div>
+              </div>
+              <p className="text-xs text-gray-400 mb-4">参考图片会直接传递给 AI 视觉分析，远比纯文字准确。在此配置角色和场景后再生成脚本效果最佳。</p>
+
+              {projectCharacters.length === 0 && projectScenes.length === 0 ? (
+                <div className="text-center py-6 text-gray-400 bg-gray-50 rounded-lg">
+                  <p className="text-2xl mb-1">🎭🏞️</p>
+                  <p className="text-sm">尚未添加角色或场景</p>
+                  <p className="text-xs mt-1">从 <Link href="/assets" className="text-purple-600 underline">数字资产库</Link> 添加，或点击上方按钮选择</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* 角色列表 */}
+                  {projectCharacters.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 mb-2">角色 ({projectCharacters.length})</p>
+                      <div className="flex flex-wrap gap-2">
+                        {projectCharacters.map((pc) => (
+                          <div key={pc.id} className="flex items-center gap-2 px-3 py-2 bg-purple-50 border border-purple-100 rounded-xl group">
+                            {pc.character.reference_images?.[0] ? (
+                              <img src={pc.character.reference_images[0]} alt="" className="w-8 h-8 rounded-full object-cover border border-purple-200" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-full bg-purple-200 flex items-center justify-center text-sm">🎭</div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{pc.character.name}</p>
+                              <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                                {pc.character.reference_images.length > 0 && <span className="text-blue-500">📷{pc.character.reference_images.length}</span>}
+                                {(pc.custom_voice_type || pc.character.voice_type) && <span className="text-green-500">🎙️</span>}
+                                {(pc.custom_appearance_prompt || pc.character.appearance_prompt) && <span>✏️</span>}
+                              </div>
+                            </div>
+                            <button onClick={() => handleRemoveCharacter(pc.character_id)}
+                              className="text-gray-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity ml-1">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* 场景列表 */}
+                  {projectScenes.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-gray-500 mb-2">场景 ({projectScenes.length})</p>
+                      <div className="flex flex-wrap gap-2">
+                        {projectScenes.map((ps) => (
+                          <div key={ps.id} className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-100 rounded-xl group">
+                            {ps.scene.reference_images?.[0] ? (
+                              <img src={ps.scene.reference_images[0]} alt="" className="w-8 h-8 rounded-lg object-cover border border-blue-200" />
+                            ) : (
+                              <div className="w-8 h-8 rounded-lg bg-blue-200 flex items-center justify-center text-sm">🏞️</div>
+                            )}
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{ps.scene.name}</p>
+                              <div className="flex items-center gap-1.5 text-xs text-gray-400">
+                                {ps.scene.reference_images.length > 0 && <span className="text-blue-500">📷{ps.scene.reference_images.length}</span>}
+                                {ps.scene.mood && <span>🎭{ps.scene.mood}</span>}
+                              </div>
+                            </div>
+                            <button onClick={() => handleRemoveScene(ps.scene_id)}
+                              className="text-gray-300 hover:text-red-500 text-xs opacity-0 group-hover:opacity-100 transition-opacity ml-1">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             {project.script_json && Object.keys(project.script_json).length > 0 && (
               <div className="bg-white rounded-xl border border-gray-100 p-6">
                 <h3 className="font-bold text-gray-900 mb-3">📄 脚本</h3>
@@ -440,6 +625,121 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* === 角色选择弹窗 === */}
+        {showCharacterPicker && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowCharacterPicker(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-gray-900">选择角色</h3>
+                  <button onClick={() => setShowCharacterPicker(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                </div>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="搜索角色..." className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    value={charSearch} onChange={(e) => setCharSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") loadGlobalCharacters(); }} />
+                  <button onClick={loadGlobalCharacters} className="px-4 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">搜索</button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-auto p-6">
+                {allCharacters.length === 0 ? (
+                  <div className="text-center py-12 text-gray-400">
+                    <p className="text-sm">没有可用角色</p>
+                    <p className="text-xs mt-1">请先在 <Link href="/assets" className="text-purple-600 underline">数字资产库</Link> 创建角色</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {allCharacters.map((ch) => {
+                      const alreadyAdded = projectCharacters.some((pc) => pc.character_id === ch.id);
+                      return (
+                        <div key={ch.id} className={`border rounded-xl p-3 flex items-center gap-3 transition-colors ${alreadyAdded ? "border-green-200 bg-green-50" : "border-gray-200 hover:border-purple-200"}`}>
+                          {ch.reference_images?.[0] ? (
+                            <img src={ch.reference_images[0]} alt="" className="w-10 h-10 rounded-full object-cover border" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center text-lg">🎭</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 text-sm truncate">{ch.name}</p>
+                            <p className="text-xs text-gray-500 truncate">{ch.description || ch.appearance_prompt || "无描述"}</p>
+                            <div className="flex items-center gap-2">
+                              {ch.reference_images.length > 0 && <span className="text-xs text-blue-500">📷{ch.reference_images.length}张参考图</span>}
+                              {ch.voice_type && <p className="text-xs text-green-600">🎙️ {ch.voice_type}</p>}
+                            </div>
+                          </div>
+                          {alreadyAdded ? (
+                            <span className="px-3 py-1 bg-green-100 text-green-700 rounded-lg text-xs font-medium">已添加</span>
+                          ) : (
+                            <button onClick={() => handleAddCharacter(ch.id)}
+                              className="px-3 py-1 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700">添加</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* === 场景选择弹窗 === */}
+        {showScenePicker && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowScenePicker(false)}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="p-6 border-b border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-gray-900">选择场景</h3>
+                  <button onClick={() => setShowScenePicker(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+                </div>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="搜索场景..." className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+                    value={sceneSearch} onChange={(e) => setSceneSearch(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") loadGlobalScenes(); }} />
+                  <button onClick={loadGlobalScenes} className="px-4 py-2 bg-gray-100 rounded-lg text-sm hover:bg-gray-200">搜索</button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-auto p-6">
+                {allScenes.length === 0 ? (
+                  <div className="text-center py-12 text-gray-400">
+                    <p className="text-sm">没有可用场景</p>
+                    <p className="text-xs mt-1">请先在 <Link href="/assets" className="text-purple-600 underline">数字资产库</Link> 创建场景</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {allScenes.map((sc) => {
+                      const alreadyAdded = projectScenes.some((ps) => ps.scene_id === sc.id);
+                      return (
+                        <div key={sc.id} className={`border rounded-xl p-3 flex items-center gap-3 transition-colors ${alreadyAdded ? "border-green-200 bg-green-50" : "border-gray-200 hover:border-blue-200"}`}>
+                          {sc.reference_images?.[0] ? (
+                            <img src={sc.reference_images[0]} alt="" className="w-10 h-10 rounded-lg object-cover border" />
+                          ) : (
+                            <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-lg">🏞️</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 text-sm truncate">{sc.name}</p>
+                            <p className="text-xs text-gray-500 truncate">{sc.description || sc.environment_prompt || "无描述"}</p>
+                            <div className="flex gap-2 text-xs text-gray-400">
+                              {sc.reference_images.length > 0 && <span className="text-blue-500">📷{sc.reference_images.length}张参考图</span>}
+                              {sc.mood && <span>🎭{sc.mood}</span>}
+                              {sc.lighting && <span>💡{sc.lighting}</span>}
+                            </div>
+                          </div>
+                          {alreadyAdded ? (
+                            <span className="px-3 py-1 bg-green-100 text-green-700 rounded-lg text-xs font-medium">已添加</span>
+                          ) : (
+                            <button onClick={() => handleAddScene(sc.id)}
+                              className="px-3 py-1 bg-blue-600 text-white rounded-lg text-xs font-medium hover:bg-blue-700">添加</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </main>
