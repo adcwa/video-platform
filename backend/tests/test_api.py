@@ -1,22 +1,50 @@
-"""Backend API Tests"""
+"""Backend API Tests — 使用独立的内存数据库，不影响生产数据"""
 
 import io
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
 from backend.app.main import app
-from backend.app.database import init_db, engine, Base
+from backend.app.database import Base, get_db
+
+# 创建测试专用的内存数据库（每次测试全新，不碰生产 data/video_platform.db）
+TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def _override_get_db():
+    async with test_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
 
 
 @pytest_asyncio.fixture
 async def client():
-    async with engine.begin() as conn:
+    # 用内存数据库建表
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    # 覆盖 app 的数据库依赖
+    app.dependency_overrides[get_db] = _override_get_db
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
-    async with engine.begin() as conn:
+
+    # 清理：还原依赖覆盖，销毁内存数据库
+    app.dependency_overrides.clear()
+    async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    await test_engine.dispose()
 
 
 @pytest.mark.asyncio
