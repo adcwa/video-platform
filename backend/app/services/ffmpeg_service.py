@@ -217,11 +217,11 @@ async def compose_project_video(
 
     has_audio = any(shot.get("audio_path") for shot in shots_data)
     if has_audio:
-        # 先拼接所有音频
+        # 先拼接所有音频（仅包含实际存在的文件）
         audio_paths = [
             shot["audio_path"]
             for shot in sorted(shots_data, key=lambda x: x["sequence"])
-            if shot.get("audio_path")
+            if shot.get("audio_path") and Path(shot["audio_path"]).exists()
         ]
         if audio_paths:
             concat_audio_path = str(project_dir / "audio_concat.mp3")
@@ -230,6 +230,7 @@ async def compose_project_video(
                 for ap in audio_paths:
                     f.write(f"file '{Path(ap).resolve()}'\n")
 
+            logger.info(f"拼接 {len(audio_paths)} 个音频文件...")
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "concat", "-safe", "0",
@@ -242,10 +243,15 @@ async def compose_project_video(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await process.communicate()
+            stdout, stderr = await process.communicate()
 
-            await merge_audio_video(concat_path, concat_audio_path, output_path)
+            if process.returncode != 0:
+                logger.warning(f"音频拼接失败，跳过音频合并: {stderr.decode()[:200]}")
+                shutil.copy2(concat_path, output_path)
+            else:
+                await merge_audio_video(concat_path, concat_audio_path, output_path)
         else:
+            logger.info("音频文件均不存在，跳过音频合并")
             shutil.copy2(concat_path, output_path)
     else:
         shutil.copy2(concat_path, output_path)

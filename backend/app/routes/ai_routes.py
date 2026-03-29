@@ -1,6 +1,7 @@
 """AI 服务路由 - 脚本生成、视频生成、语音合成"""
 
 import logging
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,11 +57,11 @@ async def generate_script(
 
         # 创建分镜
         # 先清除旧分镜
-        for old_shot in await db.execute(
+        old_shots_result = await db.execute(
             select(Shot).where(Shot.project_id == project_id)
-        ):
-            for s in old_shot.scalars().all():
-                await db.delete(s)
+        )
+        for s in old_shots_result.scalars().all():
+            await db.delete(s)
 
         shots_data = script_data.get("shots", [])
         for shot_info in shots_data:
@@ -395,10 +396,18 @@ async def compose_video(
         shots_data = []
         for shot in sorted(project.shots, key=lambda s: s.sequence):
             if shot.video_url:
+                # audio_url 存的是 URL 路径 (如 /files/outputs/xxx.mp3)
+                # 需要转换为实际文件系统路径 (如 data/outputs/xxx.mp3)
+                audio_path = None
+                if request.include_audio and shot.audio_url:
+                    audio_path = shot.audio_url.replace("/files/", "data/", 1)
+                    if not Path(audio_path).exists():
+                        logger.warning(f"音频文件不存在，跳过: {audio_path}")
+                        audio_path = None
                 shots_data.append({
                     "sequence": shot.sequence,
                     "video_url": shot.video_url,
-                    "audio_path": shot.audio_url if request.include_audio else None,
+                    "audio_path": audio_path,
                 })
 
         if not shots_data:
