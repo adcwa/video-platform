@@ -1,11 +1,41 @@
 """豆包大模型服务 - 脚本生成、场景识别"""
 
+import base64
 import json
 import logging
+import mimetypes
+from pathlib import Path
+
 import httpx
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_image_url(url: str) -> str:
+    """
+    将图片URL转换为豆包API可用的格式。
+
+    - 如果已经是 http(s):// 的公网URL，直接返回。
+    - 如果是本地路径（如 /files/uploads/images/xxx.png），
+      读取文件并转成 base64 data URL。
+    """
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+
+    # 本地路径：/files/uploads/xxx → data/uploads/xxx
+    local_path = url.replace("/files/", "data/", 1) if url.startswith("/files/") else url
+    p = Path(local_path)
+    if not p.exists():
+        logger.warning(f"图片文件不存在，跳过: {local_path}")
+        return ""
+
+    mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
+    with open(p, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    data_url = f"data:{mime_type};base64,{b64}"
+    logger.info(f"图片已转为 base64 data URL: {p.name} ({len(b64) // 1024}KB)")
+    return data_url
 
 # 场景预设提示词
 SCENE_PROMPTS = {
@@ -69,10 +99,12 @@ async def generate_script(
     # 如果有图片，添加图片分析
     if image_urls:
         for url in image_urls:
-            user_content.append({
-                "type": "input_image",
-                "image_url": url,
-            })
+            resolved = _resolve_image_url(url)
+            if resolved:
+                user_content.append({
+                    "type": "input_image",
+                    "image_url": resolved,
+                })
 
     user_text = f"""{scene_prompt}
 
@@ -174,7 +206,7 @@ async def analyze_image(image_url: str) -> dict:
                 "content": [
                     {
                         "type": "input_image",
-                        "image_url": image_url,
+                        "image_url": _resolve_image_url(image_url),
                     },
                     {
                         "type": "input_text",
