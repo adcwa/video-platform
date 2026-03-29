@@ -208,15 +208,12 @@ async def generate_video(
     reference_images = project.reference_images if project else []
     subject_ref_image = reference_images[0] if reference_images else ""
 
-    # 确定首帧（主体一致性核心逻辑）：
-    # 优先级：手动传入 > shot已存 > 参考图片（主体锚点） > 上一镜头尾帧
+    # 确定首帧（尾帧链接模式，与批量生成一致）
+    # 优先级：手动传入 > shot已存 > 上一镜头尾帧 > 参考图片（仅首个镜头）
     first_frame = request.first_frame_url or shot.first_frame_url or ""
-    if not first_frame and subject_ref_image:
-        # 使用参考图片确保主体一致
-        first_frame = subject_ref_image
-        logger.info(f"单镜头生成: 使用参考图片作为首帧（确保主体一致）")
-    elif not first_frame and project:
-        # 尝试获取上一个已完成镜头的尾帧
+
+    if not first_frame and project:
+        # 优先使用上一镜头的尾帧（场景连续 + 主体延续）
         prev_result = await db.execute(
             select(Shot)
             .where(Shot.project_id == shot.project_id)
@@ -228,7 +225,11 @@ async def generate_video(
         prev_shot = prev_result.scalar_one_or_none()
         if prev_shot and prev_shot.last_frame_url:
             first_frame = prev_shot.last_frame_url
-            logger.info(f"单镜头生成: 使用镜头 {prev_shot.sequence} 的尾帧作为首帧")
+            logger.info(f"单镜头生成: 首帧=镜头 {prev_shot.sequence} 尾帧 ✅ 尾帧链接")
+        elif subject_ref_image:
+            # 没有上一镜头尾帧（首个镜头或前面都失败了），用参考图
+            first_frame = subject_ref_image
+            logger.info(f"单镜头生成: 首帧=参考图片（无可用尾帧）")
 
     try:
         prompt = request.prompt or shot.description
@@ -238,7 +239,8 @@ async def generate_video(
         task_data = await seedance_service.create_video_task(
             prompt=prompt,
             first_frame_url=first_frame or None,
-            last_frame_url=request.last_frame_url,
+            # 不传 last_frame_url — pro-fast 不支持首尾帧同传
+            last_frame_url=request.last_frame_url,  # 仅当用户显式传入时
             duration=request.duration or shot.duration,
             ratio=request.ratio,
             resolution=request.resolution,
@@ -291,7 +293,7 @@ async def get_video_status(
             content = task_data.get("content", {})
             if isinstance(content, dict):
                 video_url = content.get("video_url", "")
-                last_frame_url = content.get("last_frame_image_url", "")
+                last_frame_url = content.get("last_frame_url", "")
             elif isinstance(content, list):
                 for item in content:
                     if item.get("type") == "video_url":
@@ -303,6 +305,7 @@ async def get_video_status(
             shot.last_frame_url = last_frame_url
             shot.status = ShotStatus.COMPLETED.value
             await db.flush()
+            logger.info(f"镜头状态查询完成: video_url={'有' if video_url else '无'}, last_frame_url={'有' if last_frame_url else '无'}")
 
             return VideoTaskStatusResponse(
                 task_id=shot.video_task_id,
@@ -376,15 +379,21 @@ async def generate_all_videos(
 
 async def _batch_generate_worker(project_id: str):
     """
-    后台批量生成 worker：
-    1. 按顺序逐个生成视频
-    2. **每个镜头都使用参考图片作为首帧**，确保主体一致性（同一只猫/同一人物）
-    3. 每个镜头视频完成后自动生成 TTS 语音（如有对白）
-    4. 注入统一风格前缀保持视觉一致
+    后台批量生成 worker — 尾帧链接模式。
 
-    关键设计：参考图片（用户上传的角色照片）是主体一致性的锚点。
-    仅靠文字描述无法保证视频生成模型生成同一个主体，必须给每个镜头提供参考图作为 first_frame。
-    如果用户为某个镜头手动指定了 first_frame_url，则优先使用用户指定的。
+    核心策略（适用于 Seedance 1.0 pro fast 等只支持 first_frame 的模型）：
+      - 镜头 1：first_frame = 用户上传的参考图片（锚定主体外观）
+      - 镜头 2：first_frame = 镜头 1 返回的 last_frame（场景连续 + 主体延续）
+      - 镜头 3：first_frame = 镜头 2 返回的 last_frame
+      - ...以此类推
+
+    这样每个镜头都从上一个镜头的最后一帧开始，保证：
+      1. 主体一致（同一只猫从头到尾）
+      2. 场景连续（每个镜头衔接自然）
+      3. 每个镜头有不同内容（因为 prompt 不同，产生不同动作/场景）
+
+    注意：不要给每个镜头都传同一张参考图做 first_frame！
+    那样会导致所有镜头都从同一个静态画面开始，看起来完全一样。
     """
     from backend.app.database import async_session
 
@@ -400,40 +409,47 @@ async def _batch_generate_worker(project_id: str):
 
             style_prefix = project.style_context or ""
             reference_images = project.reference_images or []
-            # 主体参考图：用户上传的第一张图片，作为所有镜头的首帧锚点
+            # 参考图仅用于第一个镜头的首帧
             subject_ref_image = reference_images[0] if reference_images else ""
 
             sorted_shots = sorted(project.shots, key=lambda s: s.sequence)
             prev_last_frame_url = ""
 
             for i, shot in enumerate(sorted_shots):
-                # 跳过已完成的，但记录尾帧
+                # 跳过已完成的，但记录其尾帧以供后续镜头使用
                 if shot.status == ShotStatus.COMPLETED.value and shot.video_url:
                     prev_last_frame_url = shot.last_frame_url or ""
+                    logger.info(f"镜头 {shot.sequence}: 已完成，尾帧={'有' if prev_last_frame_url else '无'}")
                     continue
 
                 try:
-                    # === 第一步：确定首帧（主体一致性核心逻辑） ===
+                    # === 第一步：确定首帧（尾帧链接模式） ===
                     # 优先级：
-                    # 1. 用户手动指定的 first_frame_url（用户明确设定）
-                    # 2. 参考图片（确保主体一致 — 每个镜头都用）
-                    # 3. 上一镜头尾帧（无参考图时的退化方案）
+                    # 1. 用户手动指定的 first_frame_url
+                    # 2. 上一镜头的尾帧（核心链接逻辑！）
+                    # 3. 参考图片（仅第一个镜头或没有尾帧时使用）
                     first_frame = shot.first_frame_url or ""
-                    if not first_frame and subject_ref_image:
-                        first_frame = subject_ref_image
-                        logger.info(f"镜头 {shot.sequence}: 使用参考图片作为首帧（确保主体一致）")
-                    elif not first_frame and prev_last_frame_url:
+
+                    if not first_frame and prev_last_frame_url:
+                        # 核心：使用上一镜头尾帧，实现连续过渡
                         first_frame = prev_last_frame_url
-                        logger.info(f"镜头 {shot.sequence}: 无参考图，使用上一镜头尾帧作为首帧")
+                        logger.info(f"镜头 {shot.sequence}: 首帧=上一镜头尾帧 ✅ 尾帧链接")
+                    elif not first_frame and subject_ref_image:
+                        # 仅第一个镜头（或前面都失败没有尾帧时）使用参考图
+                        first_frame = subject_ref_image
+                        logger.info(f"镜头 {shot.sequence}: 首帧=参考图片（{'首个镜头' if i == 0 else '无可用尾帧，回退'}）")
 
                     # === 构建增强提示词 ===
                     enhanced_prompt = shot.description
                     if style_prefix:
                         enhanced_prompt = f"{style_prefix}. {shot.description}"
 
+                    logger.info(f"镜头 {shot.sequence}: 提交生成, first_frame={'有' if first_frame else '无'}")
+
                     task_data = await seedance_service.create_video_task(
                         prompt=enhanced_prompt,
                         first_frame_url=first_frame or None,
+                        # 不传 last_frame_url — pro-fast 模型不支持首尾帧同时传入
                         duration=shot.duration,
                         ratio=project.aspect_ratio,
                         resolution=project.resolution,
@@ -461,7 +477,7 @@ async def _batch_generate_worker(project_id: str):
                                 content = task_status.get("content", {})
                                 if isinstance(content, dict):
                                     video_url = content.get("video_url", "")
-                                    last_frame_url = content.get("last_frame_image_url", "")
+                                    last_frame_url = content.get("last_frame_url", "")
                                 elif isinstance(content, list):
                                     for item in content:
                                         if item.get("type") == "video_url":
@@ -474,7 +490,15 @@ async def _batch_generate_worker(project_id: str):
                                 shot.status = ShotStatus.COMPLETED.value
                                 await db.flush()
                                 prev_last_frame_url = last_frame_url
-                                logger.info(f"镜头 {shot.sequence} 视频完成")
+                                logger.info(
+                                    f"镜头 {shot.sequence} 视频完成 ✅ "
+                                    f"尾帧={'已获取' if last_frame_url else '❌ 未获取'}"
+                                )
+                                if not last_frame_url:
+                                    logger.warning(
+                                        f"镜头 {shot.sequence}: API 未返回尾帧！"
+                                        f"后续镜头将回退到参考图。content keys: {list(content.keys()) if isinstance(content, dict) else 'list'}"
+                                    )
                                 break
                             elif status == "failed":
                                 shot.status = ShotStatus.FAILED.value
@@ -621,14 +645,23 @@ async def compose_video(
                     "sequence": shot.sequence,
                     "video_url": shot.video_url,
                     "audio_path": audio_path,
+                    "dialogue": shot.dialogue or "",
+                    "duration": shot.duration,
                 })
 
         if not shots_data:
             raise HTTPException(status_code=400, detail="没有已完成的视频分镜")
 
+        # 字幕样式
+        subtitle_style = None
+        if request.subtitle_style:
+            subtitle_style = request.subtitle_style.model_dump()
+
         compose_result = await ffmpeg_service.compose_project_video(
             shots_data=shots_data,
             project_id=project_id,
+            include_subtitles=request.include_subtitles,
+            subtitle_style=subtitle_style,
         )
 
         project.output_video_url = compose_result["output_video_url"]
@@ -638,6 +671,7 @@ async def compose_video(
         return ComposeResponse(
             output_video_url=compose_result["output_video_url"],
             duration=compose_result["duration"],
+            subtitle_url=compose_result.get("subtitle_url", ""),
         )
 
     except HTTPException:

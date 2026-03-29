@@ -17,6 +17,9 @@ export default function ProjectDetailPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [includeSubtitles, setIncludeSubtitles] = useState(true);
+  const [subtitleFontSize, setSubtitleFontSize] = useState(20);
+  const [subtitleUrl, setSubtitleUrl] = useState("");
   const [scriptTheme, setScriptTheme] = useState("");
   const [additionalContext, setAdditionalContext] = useState("");
   const [editingShot, setEditingShot] = useState<string | null>(null);
@@ -124,7 +127,12 @@ export default function ProjectDetailPage() {
   async function handleCompose() {
     setComposing(true);
     try {
-      const r = await api.composeVideo(projectId);
+      const r = await api.composeVideo(projectId, {
+        include_audio: true,
+        include_subtitles: includeSubtitles,
+        subtitle_style: includeSubtitles ? { font_size: subtitleFontSize } : undefined,
+      });
+      if (r.subtitle_url) setSubtitleUrl(r.subtitle_url);
       await loadProject(); showToast(`合成完成！时长: ${r.duration.toFixed(1)}s`, "success");
     } catch (e) { showToast("失败: " + (e as Error).message, "error"); }
     finally { setComposing(false); }
@@ -216,7 +224,7 @@ export default function ProjectDetailPage() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">参考图片（强烈推荐！）</label>
-                  <p className="text-xs text-gray-400 mb-2">上传主角/角色照片，每个镜头都会以此图作为首帧，确保所有镜头中出现同一个主体</p>
+                  <p className="text-xs text-gray-400 mb-2">上传主角照片作为第1个镜头的起点，后续镜头自动使用上一镜头尾帧衔接，保证主体一致且场景连续</p>
                   <FileUpload accept="image/jpeg,image/png,image/webp" label="点击或拖拽上传" description="支持多张" onUpload={handleImageUpload} />
                   {uploadedImages.length > 0 && (
                     <div className="mt-3 space-y-2">
@@ -229,7 +237,7 @@ export default function ProjectDetailPage() {
                           </div>
                         ))}
                       </div>
-                      <p className="text-xs text-blue-500">{uploadedImages.length} 张参考图 → 第1张将作为每个镜头的首帧（确保主体一致）</p>
+                      <p className="text-xs text-blue-500">{uploadedImages.length} 张参考图 → 第1张作为首镜头起点，后续尾帧自动链接</p>
                     </div>
                   )}
                   {project.style_context && (
@@ -345,9 +353,58 @@ export default function ProjectDetailPage() {
                   </div>
                 ))}
               </div>
+
+              {/* 音视频同步说明 */}
+              <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-100">
+                <p className="text-xs font-medium text-blue-700 mb-1">🔄 音视频同步策略</p>
+                <p className="text-xs text-blue-600">每个镜头的音频和视频会精确对齐：音频短于视频则补静音，音频长于视频则冻结末帧延长画面，确保语音和画面完美同步。</p>
+              </div>
+
+              {/* 字幕选项 */}
+              <div className="mb-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input type="checkbox" checked={includeSubtitles} onChange={(e) => setIncludeSubtitles(e.target.checked)} className="sr-only peer" />
+                      <div className="w-9 h-5 bg-gray-300 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                    <span className="text-sm font-medium text-gray-700">🔤 烧录字幕</span>
+                  </div>
+                  <span className="text-xs text-gray-400">根据对白文本自动生成</span>
+                </div>
+                {includeSubtitles && (
+                  <div className="flex items-center gap-4 pt-2 border-t border-gray-200">
+                    <div className="flex items-center gap-2">
+                      <label className="text-xs text-gray-500">字号</label>
+                      <input type="range" min={14} max={40} value={subtitleFontSize} onChange={(e) => setSubtitleFontSize(parseInt(e.target.value))}
+                        className="w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+                      <span className="text-xs text-gray-600 w-6">{subtitleFontSize}</span>
+                    </div>
+                    <p className="text-xs text-gray-400">白色文字 + 黑色描边，底部居中</p>
+                  </div>
+                )}
+              </div>
+
+              {/* 镜头时长明细 */}
+              {completedShots.length > 0 && (
+                <div className="mb-6">
+                  <p className="text-xs font-medium text-gray-500 mb-2">📋 镜头时长明细</p>
+                  <div className="flex flex-wrap gap-2">
+                    {completedShots.sort((a: Shot, b: Shot) => a.sequence - b.sequence).map((shot: Shot) => (
+                      <div key={shot.id} className="flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-xs">
+                        <span className="font-mono text-gray-500">#{shot.sequence}</span>
+                        <span className="text-gray-700">🎬{shot.duration}s</span>
+                        {shot.audio_url && <span className="text-green-600">🔊{shot.audio_duration.toFixed(1)}s</span>}
+                        {shot.dialogue && <span className="text-blue-500" title={shot.dialogue}>💬</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <button onClick={handleCompose} disabled={!canCompose || composing}
                 className="px-8 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 font-medium">
-                {composing ? <span className="flex items-center gap-2"><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />合成中...</span> : "🎞️ 合成视频"}
+                {composing ? <span className="flex items-center gap-2"><span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />合成中...</span> : `🎞️ 合成视频${includeSubtitles ? "（含字幕）" : ""}`}
               </button>
             </div>
 
@@ -356,7 +413,10 @@ export default function ProjectDetailPage() {
                 <h3 className="font-bold text-green-800 mb-4">✅ 最终视频</h3>
                 <div className="bg-black rounded-xl overflow-hidden max-w-3xl"><video src={project.output_video_url} controls className="w-full" /></div>
                 <div className="flex gap-3 mt-4">
-                  <a href={project.output_video_url} download className="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium">⬇️ 下载</a>
+                  <a href={project.output_video_url} download className="px-6 py-2 bg-green-600 text-white rounded-lg text-sm font-medium">⬇️ 下载视频</a>
+                  {subtitleUrl && (
+                    <a href={subtitleUrl} download className="px-6 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">📄 下载字幕(SRT)</a>
+                  )}
                   <button onClick={() => { navigator.clipboard.writeText(window.location.origin + project.output_video_url); showToast("已复制", "success"); }}
                     className="px-6 py-2 border border-gray-300 rounded-lg text-sm">🔗 复制链接</button>
                 </div>

@@ -168,11 +168,21 @@ class TTSResponse(BaseModel):
 
 # ============ Compose ============
 
+class SubtitleStyle(BaseModel):
+    font_name: str = "PingFang SC"
+    font_size: int = Field(default=20, ge=10, le=60)
+    outline_width: int = Field(default=2, ge=0, le=5)
+    margin_bottom: int = Field(default=40, ge=0, le=200)
+
+
 class ComposeRequest(BaseModel):
     project_id: str
     include_audio: bool = True
+    include_subtitles: bool = False
+    subtitle_style: Optional[SubtitleStyle] = None
 
 
 class ComposeResponse(BaseModel):
     output_video_url: str
     duration: float
+    subtitle_url: str = ""

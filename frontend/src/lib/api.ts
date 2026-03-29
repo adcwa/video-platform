@@ -179,10 +179,27 @@ export const api = {
     ),
 
   // 视频合成
-  composeVideo: (projectId: string, includeAudio = true) =>
+  composeVideo: (
+    projectId: string,
+    options?: {
+      include_audio?: boolean;
+      include_subtitles?: boolean;
+      subtitle_style?: {
+        font_name?: string;
+        font_size?: number;
+        outline_width?: number;
+        margin_bottom?: number;
+      };
+    }
+  ) =>
     fetchAPI(`/api/projects/${projectId}/compose`, {
       method: "POST",
-      body: JSON.stringify({ project_id: projectId, include_audio: includeAudio }),
+      body: JSON.stringify({
+        project_id: projectId,
+        include_audio: options?.include_audio ?? true,
+        include_subtitles: options?.include_subtitles ?? false,
+        subtitle_style: options?.subtitle_style,
+      }),
     }),
 
   // 配置
