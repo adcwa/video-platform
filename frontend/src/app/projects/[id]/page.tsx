@@ -215,8 +215,8 @@ export default function ProjectDetailPage() {
                   </button>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">参考图片（可选，支持多张）</label>
-                  <p className="text-xs text-gray-400 mb-2">上传角色/场景/风格参考图，AI会分析并统一所有镜头的视觉风格</p>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">参考图片（强烈推荐！）</label>
+                  <p className="text-xs text-gray-400 mb-2">上传主角/角色照片，每个镜头都会以此图作为首帧，确保所有镜头中出现同一个主体</p>
                   <FileUpload accept="image/jpeg,image/png,image/webp" label="点击或拖拽上传" description="支持多张" onUpload={handleImageUpload} />
                   {uploadedImages.length > 0 && (
                     <div className="mt-3 space-y-2">
@@ -229,7 +229,7 @@ export default function ProjectDetailPage() {
                           </div>
                         ))}
                       </div>
-                      <p className="text-xs text-blue-500">{uploadedImages.length} 张参考图 → 用于风格分析和首帧</p>
+                      <p className="text-xs text-blue-500">{uploadedImages.length} 张参考图 → 第1张将作为每个镜头的首帧（确保主体一致）</p>
                     </div>
                   )}
                   {project.style_context && (

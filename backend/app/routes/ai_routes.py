@@ -48,17 +48,27 @@ async def generate_script(
             project.reference_images = request.image_urls
 
         # 调用豆包大模型生成脚本
+        # 将提取的风格/主体描述作为额外上下文传入，让LLM在每个镜头中复用
+        style_hint = ""
+        if style_context:
+            style_hint = f"\n\n【已提取的主体与风格信息】\n{style_context}\n请在每个镜头description开头使用以上主体描述。"
+
         script_data = await doubao_service.generate_script(
             theme=request.theme or project.theme,
             scene_type=request.scene_type or project.scene_type,
             target_duration=request.target_duration or project.target_duration,
-            additional_context=request.additional_context,
+            additional_context=(request.additional_context or "") + style_hint,
             image_urls=request.image_urls if request.image_urls else None,
         )
 
-        # 从脚本中提取 style_description（如果有的话）
-        if not style_context and script_data.get("style_description"):
-            style_context = script_data["style_description"]
+        # 同时提取 subject_description 存入 style_context
+        if script_data.get("subject_description"):
+            subject_desc = script_data["subject_description"]
+            # 合并 subject + style 作为完整上下文
+            if style_context and subject_desc not in style_context:
+                style_context = f"{subject_desc}. {style_context}"
+            elif not style_context:
+                style_context = subject_desc
             project.style_context = style_context
 
         # 更新项目
@@ -191,14 +201,21 @@ async def generate_video(
     if not shot:
         raise HTTPException(status_code=404, detail="分镜不存在")
 
-    # 获取项目的风格上下文
+    # 获取项目的风格上下文和参考图片
     proj_result = await db.execute(select(Project).where(Project.id == shot.project_id))
     project = proj_result.scalar_one_or_none()
     style_prefix = project.style_context if project else ""
+    reference_images = project.reference_images if project else []
+    subject_ref_image = reference_images[0] if reference_images else ""
 
-    # 确定首帧：手动传入 > shot已存 > 上一镜头尾帧
+    # 确定首帧（主体一致性核心逻辑）：
+    # 优先级：手动传入 > shot已存 > 参考图片（主体锚点） > 上一镜头尾帧
     first_frame = request.first_frame_url or shot.first_frame_url or ""
-    if not first_frame and project:
+    if not first_frame and subject_ref_image:
+        # 使用参考图片确保主体一致
+        first_frame = subject_ref_image
+        logger.info(f"单镜头生成: 使用参考图片作为首帧（确保主体一致）")
+    elif not first_frame and project:
         # 尝试获取上一个已完成镜头的尾帧
         prev_result = await db.execute(
             select(Shot)
@@ -360,9 +377,14 @@ async def generate_all_videos(
 async def _batch_generate_worker(project_id: str):
     """
     后台批量生成 worker：
-    1. 按顺序逐个生成视频（上一镜头尾帧 → 下一镜头首帧）
-    2. 每个镜头视频完成后自动生成 TTS 语音（如有对白）
-    3. 注入统一风格前缀保持视觉一致
+    1. 按顺序逐个生成视频
+    2. **每个镜头都使用参考图片作为首帧**，确保主体一致性（同一只猫/同一人物）
+    3. 每个镜头视频完成后自动生成 TTS 语音（如有对白）
+    4. 注入统一风格前缀保持视觉一致
+
+    关键设计：参考图片（用户上传的角色照片）是主体一致性的锚点。
+    仅靠文字描述无法保证视频生成模型生成同一个主体，必须给每个镜头提供参考图作为 first_frame。
+    如果用户为某个镜头手动指定了 first_frame_url，则优先使用用户指定的。
     """
     from backend.app.database import async_session
 
@@ -378,7 +400,8 @@ async def _batch_generate_worker(project_id: str):
 
             style_prefix = project.style_context or ""
             reference_images = project.reference_images or []
-            first_ref_image = reference_images[0] if reference_images else ""
+            # 主体参考图：用户上传的第一张图片，作为所有镜头的首帧锚点
+            subject_ref_image = reference_images[0] if reference_images else ""
 
             sorted_shots = sorted(project.shots, key=lambda s: s.sequence)
             prev_last_frame_url = ""
@@ -390,15 +413,20 @@ async def _batch_generate_worker(project_id: str):
                     continue
 
                 try:
-                    # === 第一步：生成视频 ===
+                    # === 第一步：确定首帧（主体一致性核心逻辑） ===
+                    # 优先级：
+                    # 1. 用户手动指定的 first_frame_url（用户明确设定）
+                    # 2. 参考图片（确保主体一致 — 每个镜头都用）
+                    # 3. 上一镜头尾帧（无参考图时的退化方案）
                     first_frame = shot.first_frame_url or ""
-                    if not first_frame and prev_last_frame_url:
+                    if not first_frame and subject_ref_image:
+                        first_frame = subject_ref_image
+                        logger.info(f"镜头 {shot.sequence}: 使用参考图片作为首帧（确保主体一致）")
+                    elif not first_frame and prev_last_frame_url:
                         first_frame = prev_last_frame_url
-                        logger.info(f"镜头 {shot.sequence}: 使用上一镜头尾帧作为首帧")
-                    elif not first_frame and i == 0 and first_ref_image:
-                        first_frame = first_ref_image
-                        logger.info(f"镜头 {shot.sequence}: 使用参考图片作为首帧")
+                        logger.info(f"镜头 {shot.sequence}: 无参考图，使用上一镜头尾帧作为首帧")
 
+                    # === 构建增强提示词 ===
                     enhanced_prompt = shot.description
                     if style_prefix:
                         enhanced_prompt = f"{style_prefix}. {shot.description}"
