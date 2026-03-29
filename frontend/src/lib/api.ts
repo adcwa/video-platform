@@ -1,4 +1,9 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+// Client-side: talk to backend directly to avoid Next.js proxy timeout
+// Server-side (SSR): use relative path through rewrites
+const API_BASE =
+  typeof window !== "undefined"
+    ? process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+    : "";
 
 async function fetchAPI(path: string, options?: RequestInit) {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -26,6 +31,8 @@ export interface Project {
   resolution: string;
   script_content: string;
   script_json: Record<string, unknown>;
+  style_context: string;
+  reference_images: string[];
   output_video_url: string;
   output_audio_url: string;
   created_at: string;

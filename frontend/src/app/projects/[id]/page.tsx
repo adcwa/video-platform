@@ -32,6 +32,10 @@ export default function ProjectDetailPage() {
       const data = await api.getProject(projectId);
       setProject(data);
       if (!scriptTheme && data.theme) setScriptTheme(data.theme);
+      // 恢复之前上传的参考图片
+      if (data.reference_images && data.reference_images.length > 0 && uploadedImages.length === 0) {
+        setUploadedImages(data.reference_images);
+      }
       if (data.shots.length > 0 && data.status !== "draft") {
         const hasCompleted = data.shots.some((s: Shot) => s.status === "completed" && s.video_url);
         if (hasCompleted) setActiveTab("compose");
@@ -211,16 +215,27 @@ export default function ProjectDetailPage() {
                   </button>
                 </div>
                 <div>
-                  <FileUpload accept="image/jpeg,image/png,image/webp" label="参考图片（可选）" description="角色/物品识别" onUpload={handleImageUpload} previewUrl={uploadedImages[uploadedImages.length - 1]} />
+                  <label className="block text-sm font-medium text-gray-700 mb-2">参考图片（可选，支持多张）</label>
+                  <p className="text-xs text-gray-400 mb-2">上传角色/场景/风格参考图，AI会分析并统一所有镜头的视觉风格</p>
+                  <FileUpload accept="image/jpeg,image/png,image/webp" label="点击或拖拽上传" description="支持多张" onUpload={handleImageUpload} />
                   {uploadedImages.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {uploadedImages.map((url, i) => (
-                        <div key={i} className="relative w-16 h-16">
-                          <img src={url} alt="" className="w-full h-full object-cover rounded-lg" />
-                          <button onClick={() => setUploadedImages((p) => p.filter((_, idx) => idx !== i))}
-                            className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs flex items-center justify-center">✕</button>
-                        </div>
-                      ))}
+                    <div className="mt-3 space-y-2">
+                      <div className="flex flex-wrap gap-2">
+                        {uploadedImages.map((url, i) => (
+                          <div key={i} className="relative w-16 h-16 group">
+                            <img src={url} alt="" className="w-full h-full object-cover rounded-lg border border-gray-200" />
+                            <button onClick={() => setUploadedImages((p) => p.filter((_, idx) => idx !== i))}
+                              className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">✕</button>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-xs text-blue-500">{uploadedImages.length} 张参考图 → 用于风格分析和首帧</p>
+                    </div>
+                  )}
+                  {project.style_context && (
+                    <div className="mt-3 p-2 bg-purple-50 rounded-lg border border-purple-100">
+                      <p className="text-xs font-medium text-purple-700 mb-1">🎨 提取的视觉风格</p>
+                      <p className="text-xs text-purple-600">{project.style_context}</p>
                     </div>
                   )}
                 </div>
@@ -290,6 +305,7 @@ export default function ProjectDetailPage() {
 
                     <div className="flex flex-wrap gap-3 mt-3">
                       {shot.first_frame_url && <div><p className="text-xs text-gray-400 mb-1">首帧</p><img src={shot.first_frame_url} alt="" className="h-20 rounded-lg border" /></div>}
+                      {shot.last_frame_url && <div><p className="text-xs text-gray-400 mb-1">尾帧 → 下一镜头</p><img src={shot.last_frame_url} alt="" className="h-20 rounded-lg border border-blue-200" /></div>}
                       {shot.video_url && <div className="flex-1 min-w-[240px]"><p className="text-xs text-gray-400 mb-1">视频</p><video src={shot.video_url} controls className="w-full max-w-sm rounded-lg" /></div>}
                       {shot.audio_url && <div className="flex-1 min-w-[200px]"><p className="text-xs text-gray-400 mb-1">语音({shot.audio_duration.toFixed(1)}s)</p><audio src={shot.audio_url} controls className="w-full" /></div>}
                     </div>

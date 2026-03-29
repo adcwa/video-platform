@@ -57,6 +57,11 @@ class Project(Base):
     script_content = Column(Text, default="")
     script_json = Column(JSON, default=dict)
 
+    # 图片分析获得的风格/背景上下文（注入每个镜头 prompt）
+    style_context = Column(Text, default="")
+    # 用户上传的参考图片URL列表（JSON数组）
+    reference_images = Column(JSON, default=list)
+
     # 最终输出
     output_video_url = Column(String(500), default="")
     output_audio_url = Column(String(500), default="")

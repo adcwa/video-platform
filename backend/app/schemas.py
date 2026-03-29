@@ -64,6 +64,8 @@ class ProjectResponse(BaseModel):
     resolution: str
     script_content: str
     script_json: dict
+    style_context: str = ""
+    reference_images: list[str] = []
     output_video_url: str
     output_audio_url: str
     created_at: datetime

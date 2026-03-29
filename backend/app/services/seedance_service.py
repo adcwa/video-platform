@@ -1,10 +1,37 @@
 """火山引擎 Seedance 视频生成服务"""
 
+import base64
 import logging
+import mimetypes
+from pathlib import Path
+
 import httpx
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_frame_url(url: str) -> str:
+    """
+    将帧图片URL转换为Seedance API可用格式。
+    公网URL直接返回，本地路径转为base64 data URL。
+    """
+    if not url:
+        return ""
+    if url.startswith("http://") or url.startswith("https://") or url.startswith("data:"):
+        return url
+
+    # 本地路径：/files/uploads/xxx → data/uploads/xxx
+    local_path = url.replace("/files/", "data/", 1) if url.startswith("/files/") else url
+    p = Path(local_path)
+    if not p.exists():
+        logger.warning(f"帧图片文件不存在: {local_path}")
+        return ""
+
+    mime_type = mimetypes.guess_type(str(p))[0] or "image/png"
+    with open(p, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:{mime_type};base64,{b64}"
 
 
 async def create_video_task(
@@ -38,19 +65,23 @@ async def create_video_task(
 
     # 添加首帧图片
     if first_frame_url:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": first_frame_url},
-            "role": "first_frame",
-        })
+        resolved_first = _resolve_frame_url(first_frame_url)
+        if resolved_first:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": resolved_first},
+                "role": "first_frame",
+            })
 
     # 添加尾帧图片
     if last_frame_url:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": last_frame_url},
-            "role": "last_frame",
-        })
+        resolved_last = _resolve_frame_url(last_frame_url)
+        if resolved_last:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": resolved_last},
+                "role": "last_frame",
+            })
 
     payload = {
         "model": model_id,
