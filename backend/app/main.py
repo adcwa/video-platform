@@ -14,6 +14,7 @@ from backend.app.routes.projects import router as projects_router
 from backend.app.routes.ai_routes import router as ai_router
 from backend.app.routes.uploads import router as uploads_router
 from backend.app.routes.ws import router as ws_router
+from backend.app.routes.assets import router as assets_router
 
 # 配置日志
 logging.basicConfig(
@@ -67,6 +68,7 @@ app.mount("/files/outputs", StaticFiles(directory=settings.output_dir), name="ou
 app.include_router(projects_router, prefix="/api")
 app.include_router(ai_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")
+app.include_router(assets_router, prefix="/api")
 app.include_router(ws_router)
 
 

@@ -186,3 +186,147 @@ class ComposeResponse(BaseModel):
     output_video_url: str
     duration: float
     subtitle_url: str = ""
+
+
+# ============ 数字资产：角色 ============
+
+class CharacterCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = ""
+    appearance_prompt: str = ""
+    appearance_prompt_zh: str = ""
+    reference_images: list[str] = []
+    voice_type: str = ""
+    voice_config: dict = {}
+    tags: list[str] = []
+    is_global: bool = True
+    source_project_id: str = ""
+
+
+class CharacterUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    appearance_prompt: Optional[str] = None
+    appearance_prompt_zh: Optional[str] = None
+    reference_images: Optional[list[str]] = None
+    voice_type: Optional[str] = None
+    voice_config: Optional[dict] = None
+    tags: Optional[list[str]] = None
+    is_global: Optional[bool] = None
+
+
+class CharacterResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    appearance_prompt: str
+    appearance_prompt_zh: str
+    reference_images: list[str]
+    voice_type: str
+    voice_config: dict
+    tags: list[str]
+    is_global: bool
+    source_project_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ============ 数字资产：场景 ============
+
+class SceneCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = ""
+    environment_prompt: str = ""
+    environment_prompt_zh: str = ""
+    reference_images: list[str] = []
+    mood: str = ""
+    lighting: str = ""
+    tags: list[str] = []
+    is_global: bool = True
+    source_project_id: str = ""
+
+
+class SceneUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    environment_prompt: Optional[str] = None
+    environment_prompt_zh: Optional[str] = None
+    reference_images: Optional[list[str]] = None
+    mood: Optional[str] = None
+    lighting: Optional[str] = None
+    tags: Optional[list[str]] = None
+    is_global: Optional[bool] = None
+
+
+class SceneResponse(BaseModel):
+    id: str
+    name: str
+    description: str
+    environment_prompt: str
+    environment_prompt_zh: str
+    reference_images: list[str]
+    mood: str
+    lighting: str
+    tags: list[str]
+    is_global: bool
+    source_project_id: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ============ 项目-角色/场景关联 ============
+
+class ProjectCharacterCreate(BaseModel):
+    character_id: str
+    custom_description: str = ""
+    custom_appearance_prompt: str = ""
+    custom_voice_type: str = ""
+    custom_voice_config: dict = {}
+
+
+class ProjectCharacterResponse(BaseModel):
+    id: str
+    project_id: str
+    character_id: str
+    custom_description: str
+    custom_appearance_prompt: str
+    custom_voice_type: str
+    custom_voice_config: dict
+    created_at: datetime
+    character: CharacterResponse
+
+    model_config = {"from_attributes": True}
+
+
+class ProjectSceneCreate(BaseModel):
+    scene_id: str
+    custom_description: str = ""
+    custom_environment_prompt: str = ""
+
+
+class ProjectSceneResponse(BaseModel):
+    id: str
+    project_id: str
+    scene_id: str
+    custom_description: str
+    custom_environment_prompt: str
+    created_at: datetime
+    scene: SceneResponse
+
+    model_config = {"from_attributes": True}
+
+
+# ============ AI 图片识别请求 ============
+
+class ImageRecognizeRequest(BaseModel):
+    image_url: str = Field(..., min_length=1)
+    auto_create: bool = True  # 是否自动创建识别到的角色和场景
+
+
+class PromoteToGlobalRequest(BaseModel):
+    """将项目级角色/场景升级为全局"""
+    name: Optional[str] = None  # 可重命名

@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from backend.app.config import settings
@@ -86,7 +87,7 @@ async def generate_script(
     scene_type: str = "entertainment",
     target_duration: int = 30,
     additional_context: str = "",
-    image_urls: list[str] | None = None,
+    image_urls: Optional[list] = None,
 ) -> dict:
     """
     使用豆包大模型生成视频脚本
@@ -355,3 +356,118 @@ async def extract_style_context(image_urls: list[str]) -> str:
     except Exception as e:
         logger.warning(f"提取视觉风格失败（不影响流程）: {e}")
         return ""
+
+
+async def recognize_characters_and_scenes(image_url: str) -> dict:
+    """
+    使用豆包大模型对图片进行深度识别，提取角色和场景的结构化信息。
+    用于数字资产管理 — 自动创建全局角色和场景。
+
+    返回格式:
+    {
+      "characters": [
+        {
+          "name": "...",
+          "description_zh": "中文描述",
+          "appearance_prompt": "英文外观提示词（用于 Seedance）",
+          "tags": ["动物", "猫"]
+        }
+      ],
+      "scene": {
+        "name": "...",
+        "description_zh": "中文描述",
+        "environment_prompt": "英文环境提示词",
+        "mood": "...",
+        "lighting": "...",
+        "tags": ["室内", "现代"]
+      }
+    }
+    """
+    resolved = _resolve_image_url(image_url)
+    if not resolved:
+        raise ValueError(f"无法解析图片URL: {image_url}")
+
+    payload = {
+        "model": settings.doubao_model_id,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_image",
+                        "image_url": resolved,
+                    },
+                    {
+                        "type": "input_text",
+                        "text": """请仔细分析这张图片，提取其中的角色（人物/动物/主要物体）和场景信息。
+
+你必须返回严格的JSON格式，不要包含任何其他文本：
+
+{
+  "characters": [
+    {
+      "name": "角色的简短名字（如'布偶猫'、'红衣女孩'、'金毛犬'）",
+      "description_zh": "角色的详细中文描述，包含所有可辨识的视觉特征（品种/体型/毛色/发型/服装/面部特征等）",
+      "appearance_prompt": "Detailed English appearance description for AI video generation. Be very specific about: species/breed, fur color/pattern, eye color, body size, clothing, hair style, distinctive marks. Example: 'a Ragdoll cat with striking blue eyes, cream-colored fur with dark brown points on face, ears and tail, fluffy long coat, medium-large muscular build'",
+      "tags": ["分类标签1", "分类标签2"]
+    }
+  ],
+  "scene": {
+    "name": "场景的简短名称（如'现代客厅'、'日落海滩'、'森林小径'）",
+    "description_zh": "场景的详细中文描述，包含环境、装饰、物品等",
+    "environment_prompt": "Detailed English environment description for AI video generation. Include: setting type, key objects, materials, colors, spatial arrangement. Example: 'a cozy modern living room with warm wooden floors, beige sofa with throw pillows, large windows with sheer curtains letting in soft natural light, potted green plants on shelves'",
+    "mood": "氛围描述（如'温馨舒适'、'紧张悬疑'、'活泼欢快'）",
+    "lighting": "光照描述（如'柔和自然光'、'暖黄色灯光'、'日落金色光线'）",
+    "tags": ["分类标签1", "分类标签2"]
+  }
+}
+
+要求：
+1. 角色描述必须非常具体，要让人只看文字就能辨认出这个角色
+2. appearance_prompt 必须是英文，要足够详细，用于 AI 视频生成
+3. 如果图中没有明显角色，characters 可以为空数组
+4. scene 信息必须提供
+5. tags 用于后续检索，请给出有意义的分类标签
+仅返回JSON。""",
+                    },
+                ],
+            }
+        ],
+    }
+
+    headers = {
+        "Authorization": f"Bearer {settings.doubao_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{settings.seedance_api_base}/responses",
+            json=payload,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    output_text = ""
+    if "output" in data:
+        for item in data["output"]:
+            if item.get("type") == "message":
+                for content in item.get("content", []):
+                    if content.get("type") == "output_text":
+                        output_text += content.get("text", "")
+
+    clean_text = output_text.strip()
+    if clean_text.startswith("```json"):
+        clean_text = clean_text[7:]
+    if clean_text.startswith("```"):
+        clean_text = clean_text[3:]
+    if clean_text.endswith("```"):
+        clean_text = clean_text[:-3]
+
+    result = json.loads(clean_text.strip())
+    logger.info(
+        f"图片识别完成: {len(result.get('characters', []))} 个角色, "
+        f"场景={result.get('scene', {}).get('name', '无')}"
+    )
+    return result

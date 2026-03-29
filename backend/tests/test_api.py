@@ -220,3 +220,212 @@ async def test_project_shots_cascade(client: AsyncClient):
     await client.delete(f"/api/projects/{pid}")
     shots_resp = await client.get(f"/api/projects/{pid}/shots")
     assert len(shots_resp.json()) == 0
+
+
+# ============ 数字资产测试 ============
+
+@pytest.mark.asyncio
+async def test_create_character(client: AsyncClient):
+    response = await client.post("/api/assets/characters", json={
+        "name": "布偶猫小花",
+        "description": "一只可爱的布偶猫",
+        "appearance_prompt": "a Ragdoll cat with blue eyes",
+        "appearance_prompt_zh": "蓝眼睛的布偶猫",
+        "tags": ["猫", "动物"],
+        "is_global": True,
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "布偶猫小花"
+    assert data["is_global"] is True
+    assert "猫" in data["tags"]
+    assert data["id"]
+
+
+@pytest.mark.asyncio
+async def test_list_characters(client: AsyncClient):
+    # 创建两个角色
+    await client.post("/api/assets/characters", json={"name": "角色A"})
+    await client.post("/api/assets/characters", json={"name": "角色B"})
+
+    response = await client.get("/api/assets/characters")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_character(client: AsyncClient):
+    r = await client.post("/api/assets/characters", json={"name": "原始名"})
+    cid = r.json()["id"]
+
+    r2 = await client.put(f"/api/assets/characters/{cid}", json={"name": "新名字"})
+    assert r2.status_code == 200
+    assert r2.json()["name"] == "新名字"
+
+
+@pytest.mark.asyncio
+async def test_delete_character(client: AsyncClient):
+    r = await client.post("/api/assets/characters", json={"name": "待删除"})
+    cid = r.json()["id"]
+
+    r2 = await client.delete(f"/api/assets/characters/{cid}")
+    assert r2.status_code == 200
+
+    r3 = await client.get(f"/api/assets/characters/{cid}")
+    assert r3.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_scene(client: AsyncClient):
+    response = await client.post("/api/assets/scenes", json={
+        "name": "现代客厅",
+        "description": "温馨的现代客厅",
+        "environment_prompt": "a cozy modern living room",
+        "mood": "温馨",
+        "lighting": "柔和自然光",
+        "tags": ["室内", "现代"],
+    })
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "现代客厅"
+    assert data["mood"] == "温馨"
+
+
+@pytest.mark.asyncio
+async def test_list_scenes(client: AsyncClient):
+    await client.post("/api/assets/scenes", json={"name": "场景A"})
+    await client.post("/api/assets/scenes", json={"name": "场景B"})
+
+    response = await client.get("/api/assets/scenes")
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_scene(client: AsyncClient):
+    r = await client.post("/api/assets/scenes", json={"name": "待删除场景"})
+    sid = r.json()["id"]
+
+    r2 = await client.delete(f"/api/assets/scenes/{sid}")
+    assert r2.status_code == 200
+
+    r3 = await client.get(f"/api/assets/scenes/{sid}")
+    assert r3.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_project_character_link(client: AsyncClient):
+    # 创建项目和角色
+    pr = await client.post("/api/projects", json={"title": "测试项目"})
+    pid = pr.json()["id"]
+    cr = await client.post("/api/assets/characters", json={"name": "测试角色"})
+    cid = cr.json()["id"]
+
+    # 关联
+    r = await client.post(f"/api/assets/projects/{pid}/characters", json={
+        "character_id": cid,
+        "custom_description": "在这个项目中角色穿红色衣服",
+    })
+    assert r.status_code == 200
+    assert r.json()["character"]["name"] == "测试角色"
+    assert r.json()["custom_description"] == "在这个项目中角色穿红色衣服"
+
+    # 列表
+    lr = await client.get(f"/api/assets/projects/{pid}/characters")
+    assert len(lr.json()) == 1
+
+    # 重复关联应失败
+    dup = await client.post(f"/api/assets/projects/{pid}/characters", json={
+        "character_id": cid,
+    })
+    assert dup.status_code == 400
+
+    # 移除关联
+    dr = await client.delete(f"/api/assets/projects/{pid}/characters/{cid}")
+    assert dr.status_code == 200
+
+    lr2 = await client.get(f"/api/assets/projects/{pid}/characters")
+    assert len(lr2.json()) == 0
+
+
+@pytest.mark.asyncio
+async def test_project_scene_link(client: AsyncClient):
+    pr = await client.post("/api/projects", json={"title": "测试项目"})
+    pid = pr.json()["id"]
+    sr = await client.post("/api/assets/scenes", json={"name": "测试场景"})
+    sid = sr.json()["id"]
+
+    r = await client.post(f"/api/assets/projects/{pid}/scenes", json={
+        "scene_id": sid,
+    })
+    assert r.status_code == 200
+    assert r.json()["scene"]["name"] == "测试场景"
+
+    lr = await client.get(f"/api/assets/projects/{pid}/scenes")
+    assert len(lr.json()) == 1
+
+    dr = await client.delete(f"/api/assets/projects/{pid}/scenes/{sid}")
+    assert dr.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_promote_character_to_global(client: AsyncClient):
+    r = await client.post("/api/assets/characters", json={
+        "name": "项目级角色",
+        "is_global": False,
+    })
+    cid = r.json()["id"]
+    assert r.json()["is_global"] is False
+
+    # 升级
+    pr = await client.post(f"/api/assets/characters/{cid}/promote", json={
+        "name": "全局角色",
+    })
+    assert pr.status_code == 200
+    assert pr.json()["is_global"] is True
+    assert pr.json()["name"] == "全局角色"
+
+    # 重复升级应失败
+    dup = await client.post(f"/api/assets/characters/{cid}/promote", json={})
+    assert dup.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_promote_scene_to_global(client: AsyncClient):
+    r = await client.post("/api/assets/scenes", json={
+        "name": "项目级场景",
+        "is_global": False,
+    })
+    sid = r.json()["id"]
+
+    pr = await client.post(f"/api/assets/scenes/{sid}/promote", json={})
+    assert pr.status_code == 200
+    assert pr.json()["is_global"] is True
+
+
+@pytest.mark.asyncio
+async def test_asset_stats(client: AsyncClient):
+    await client.post("/api/assets/characters", json={"name": "全局角色", "is_global": True})
+    await client.post("/api/assets/characters", json={"name": "项目角色", "is_global": False})
+    await client.post("/api/assets/scenes", json={"name": "全局场景", "is_global": True})
+
+    r = await client.get("/api/assets/stats")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["characters"]["total"] == 2
+    assert data["characters"]["global"] == 1
+    assert data["characters"]["project_level"] == 1
+    assert data["scenes"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_characters(client: AsyncClient):
+    await client.post("/api/assets/characters", json={"name": "布偶猫", "description": "可爱的猫"})
+    await client.post("/api/assets/characters", json={"name": "金毛犬", "description": "忠诚的狗"})
+
+    # 搜索
+    r = await client.get("/api/assets/characters?search=猫")
+    assert r.status_code == 200
+    assert len(r.json()) == 1
+    assert r.json()[0]["name"] == "布偶猫"

@@ -80,6 +80,88 @@ export interface UploadResult {
   mime_type: string;
 }
 
+// ============ 数字资产类型 ============
+
+export interface Character {
+  id: string;
+  name: string;
+  description: string;
+  appearance_prompt: string;
+  appearance_prompt_zh: string;
+  reference_images: string[];
+  voice_type: string;
+  voice_config: Record<string, unknown>;
+  tags: string[];
+  is_global: boolean;
+  source_project_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Scene {
+  id: string;
+  name: string;
+  description: string;
+  environment_prompt: string;
+  environment_prompt_zh: string;
+  reference_images: string[];
+  mood: string;
+  lighting: string;
+  tags: string[];
+  is_global: boolean;
+  source_project_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectCharacter {
+  id: string;
+  project_id: string;
+  character_id: string;
+  custom_description: string;
+  custom_appearance_prompt: string;
+  custom_voice_type: string;
+  custom_voice_config: Record<string, unknown>;
+  created_at: string;
+  character: Character;
+}
+
+export interface ProjectScene {
+  id: string;
+  project_id: string;
+  scene_id: string;
+  custom_description: string;
+  custom_environment_prompt: string;
+  created_at: string;
+  scene: Scene;
+}
+
+export interface AssetStats {
+  characters: { total: number; global: number; project_level: number };
+  scenes: { total: number; global: number; project_level: number };
+}
+
+export interface RecognitionResult {
+  recognition: {
+    characters: {
+      name: string;
+      description_zh: string;
+      appearance_prompt: string;
+      tags: string[];
+    }[];
+    scene: {
+      name: string;
+      description_zh: string;
+      environment_prompt: string;
+      mood: string;
+      lighting: string;
+      tags: string[];
+    };
+  };
+  created_characters: { id: string; name: string; description: string; appearance_prompt: string }[];
+  created_scenes: { id: string; name: string; description: string; environment_prompt: string }[];
+}
+
 // ============ API Client ============
 
 export const api = {
@@ -247,6 +329,113 @@ export const api = {
   // 获取项目素材
   getProjectAssets: (projectId: string) =>
     fetchAPI(`/api/uploads/assets/${projectId}`),
+
+  // ============ 数字资产：角色 ============
+
+  listCharacters: (params?: { is_global?: boolean; tag?: string; search?: string }): Promise<Character[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.is_global !== undefined) searchParams.set("is_global", String(params.is_global));
+    if (params?.tag) searchParams.set("tag", params.tag);
+    if (params?.search) searchParams.set("search", params.search);
+    const qs = searchParams.toString();
+    return fetchAPI(`/api/assets/characters${qs ? `?${qs}` : ""}`);
+  },
+
+  createCharacter: (data: Partial<Character>): Promise<Character> =>
+    fetchAPI("/api/assets/characters", { method: "POST", body: JSON.stringify(data) }),
+
+  getCharacter: (id: string): Promise<Character> =>
+    fetchAPI(`/api/assets/characters/${id}`),
+
+  updateCharacter: (id: string, data: Partial<Character>): Promise<Character> =>
+    fetchAPI(`/api/assets/characters/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+
+  deleteCharacter: (id: string) =>
+    fetchAPI(`/api/assets/characters/${id}`, { method: "DELETE" }),
+
+  promoteCharacter: (id: string, name?: string): Promise<Character> =>
+    fetchAPI(`/api/assets/characters/${id}/promote`, {
+      method: "POST",
+      body: JSON.stringify(name ? { name } : {}),
+    }),
+
+  // ============ 数字资产：场景 ============
+
+  listScenes: (params?: { is_global?: boolean; tag?: string; search?: string }): Promise<Scene[]> => {
+    const searchParams = new URLSearchParams();
+    if (params?.is_global !== undefined) searchParams.set("is_global", String(params.is_global));
+    if (params?.tag) searchParams.set("tag", params.tag);
+    if (params?.search) searchParams.set("search", params.search);
+    const qs = searchParams.toString();
+    return fetchAPI(`/api/assets/scenes${qs ? `?${qs}` : ""}`);
+  },
+
+  createScene: (data: Partial<Scene>): Promise<Scene> =>
+    fetchAPI("/api/assets/scenes", { method: "POST", body: JSON.stringify(data) }),
+
+  getScene: (id: string): Promise<Scene> =>
+    fetchAPI(`/api/assets/scenes/${id}`),
+
+  updateScene: (id: string, data: Partial<Scene>): Promise<Scene> =>
+    fetchAPI(`/api/assets/scenes/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+
+  deleteScene: (id: string) =>
+    fetchAPI(`/api/assets/scenes/${id}`, { method: "DELETE" }),
+
+  promoteScene: (id: string, name?: string): Promise<Scene> =>
+    fetchAPI(`/api/assets/scenes/${id}/promote`, {
+      method: "POST",
+      body: JSON.stringify(name ? { name } : {}),
+    }),
+
+  // ============ AI 图片识别 ============
+
+  recognizeImage: (imageUrl: string, autoCreate: boolean = true): Promise<RecognitionResult> =>
+    fetchAPI("/api/assets/recognize-image", {
+      method: "POST",
+      body: JSON.stringify({ image_url: imageUrl, auto_create: autoCreate }),
+    }),
+
+  // ============ 资产统计 ============
+
+  getAssetStats: (): Promise<AssetStats> => fetchAPI("/api/assets/stats"),
+
+  // ============ 项目-角色关联 ============
+
+  listProjectCharacters: (projectId: string): Promise<ProjectCharacter[]> =>
+    fetchAPI(`/api/assets/projects/${projectId}/characters`),
+
+  addProjectCharacter: (projectId: string, data: {
+    character_id: string;
+    custom_description?: string;
+    custom_appearance_prompt?: string;
+    custom_voice_type?: string;
+  }): Promise<ProjectCharacter> =>
+    fetchAPI(`/api/assets/projects/${projectId}/characters`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  removeProjectCharacter: (projectId: string, characterId: string) =>
+    fetchAPI(`/api/assets/projects/${projectId}/characters/${characterId}`, { method: "DELETE" }),
+
+  // ============ 项目-场景关联 ============
+
+  listProjectScenes: (projectId: string): Promise<ProjectScene[]> =>
+    fetchAPI(`/api/assets/projects/${projectId}/scenes`),
+
+  addProjectScene: (projectId: string, data: {
+    scene_id: string;
+    custom_description?: string;
+    custom_environment_prompt?: string;
+  }): Promise<ProjectScene> =>
+    fetchAPI(`/api/assets/projects/${projectId}/scenes`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  removeProjectScene: (projectId: string, sceneId: string) =>
+    fetchAPI(`/api/assets/projects/${projectId}/scenes/${sceneId}`, { method: "DELETE" }),
 };
 
 // ============ WebSocket Helper ============
